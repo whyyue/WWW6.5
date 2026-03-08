@@ -14,7 +14,7 @@ contract AuctionHouse {
     mapping (address => uint) public bids;
     address [] public bidders;
 
-    constructor (string memory _item, uint _biddingTimes) {
+    constructor(string memory _item, uint _biddingTimes) {
         owner = msg.sender;
         item=_item;
         auctionEndTime = block.timestamp + _biddingTimes;
@@ -38,14 +38,14 @@ contract AuctionHouse {
 
     }
 
-    function endAuction()external {
+    function endAuction() external {
         require(block.timestamp >= auctionEndTime, "Auction hasn't ended yet.");
         require (!ended, "Auction has already ended.");
 
         ended = true;
     }
 
-    function getAllBidders() external view returns (address[] memory){
+    function getAllBidders() external view returns (address[] memory) {
         return bidders;
     }
 
