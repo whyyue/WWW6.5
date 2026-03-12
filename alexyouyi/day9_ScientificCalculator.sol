@@ -15,7 +15,7 @@ contract ScientificCalculator{
             result=(result + number / result)/2;
         }
 
-        return result;
+        return uint256(result);
     }
    
    
