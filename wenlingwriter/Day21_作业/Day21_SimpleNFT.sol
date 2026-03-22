@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "./ERC721.sol";
+import "./Day21_ERC721.sol";
 
 contract SimpleNFT is ERC721, ERC721Metadata, ERC165 {
     // State variables
