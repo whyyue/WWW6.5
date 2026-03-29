@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract NFTMarketplace is ReentrancyGuard {
     address public owner;
-    uint256 public marketplaceFeePercent; // in basis points (100 = 1%)
+    uint256 public marketplaceFeePercent; // basis points (100 = 1%)
     address public feeRecipient;
 
     struct Listing {
@@ -15,7 +15,7 @@ contract NFTMarketplace is ReentrancyGuard {
         uint256 tokenId;
         uint256 price;
         address royaltyReceiver;
-        uint256 royaltyPercent; // in basis points
+        uint256 royaltyPercent;
         bool isListed;
     }
 
@@ -47,14 +47,11 @@ contract NFTMarketplace is ReentrancyGuard {
         uint256 indexed tokenId
     );
 
-    event FeeUpdated(
-        uint256 newMarketplaceFee,
-        address newFeeRecipient
-    );
+    event FeeUpdated(uint256 newMarketplaceFee, address newFeeRecipient);
 
     constructor(uint256 _marketplaceFeePercent, address _feeRecipient) {
-        require(_marketplaceFeePercent <= 1000, "Marketplace fee too high (max 10%)");
-        require(_feeRecipient != address(0), "Fee recipient cannot be zero");
+        require(_marketplaceFeePercent <= 1000, "Max 10%");
+        require(_feeRecipient != address(0), "Invalid address");
 
         owner = msg.sender;
         marketplaceFeePercent = _marketplaceFeePercent;
@@ -67,13 +64,13 @@ contract NFTMarketplace is ReentrancyGuard {
     }
 
     function setMarketplaceFeePercent(uint256 _newFee) external onlyOwner {
-        require(_newFee <= 1000, "Marketplace fee too high");
+        require(_newFee <= 1000, "Max 10%");
         marketplaceFeePercent = _newFee;
         emit FeeUpdated(_newFee, feeRecipient);
     }
 
     function setFeeRecipient(address _newRecipient) external onlyOwner {
-        require(_newRecipient != address(0), "Invalid fee recipient");
+        require(_newRecipient != address(0), "Invalid address");
         feeRecipient = _newRecipient;
         emit FeeUpdated(marketplaceFeePercent, _newRecipient);
     }
@@ -85,15 +82,17 @@ contract NFTMarketplace is ReentrancyGuard {
         address royaltyReceiver,
         uint256 royaltyPercent
     ) external {
-        require(price > 0, "Price must be above zero");
-        require(royaltyPercent <= 1000, "Max 10% royalty allowed");
+        require(price > 0, "Invalid price");
+        require(royaltyPercent <= 1000, "Max 10%");
         require(!listings[nftAddress][tokenId].isListed, "Already listed");
 
         IERC721 nft = IERC721(nftAddress);
-        require(nft.ownerOf(tokenId) == msg.sender, "Not the owner");
+
+        require(nft.ownerOf(tokenId) == msg.sender, "Not owner");
         require(
-            nft.getApproved(tokenId) == address(this) || nft.isApprovedForAll(msg.sender, address(this)),
-            "Marketplace not approved"
+            nft.getApproved(tokenId) == address(this) ||
+                nft.isApprovedForAll(msg.sender, address(this)),
+            "Not approved"
         );
 
         listings[nftAddress][tokenId] = Listing({
@@ -109,37 +108,53 @@ contract NFTMarketplace is ReentrancyGuard {
         emit Listed(msg.sender, nftAddress, tokenId, price, royaltyReceiver, royaltyPercent);
     }
 
-    function buyNFT(address nftAddress, uint256 tokenId) external payable nonReentrant {
+    function buyNFT(address nftAddress, uint256 tokenId)
+        external
+        payable
+        nonReentrant
+    {
         Listing memory item = listings[nftAddress][tokenId];
+
+        // ===== CHECKS =====
         require(item.isListed, "Not listed");
-        require(msg.value == item.price, "Incorrect ETH sent");
+        require(msg.value == item.price, "Incorrect price");
         require(
             item.royaltyPercent + marketplaceFeePercent <= 10000,
-            "Combined fees exceed 100%"
+            "Fee overflow"
         );
 
+        // ===== EFFECTS =====
+        delete listings[nftAddress][tokenId];
+
+        // ===== CALCULATIONS =====
         uint256 feeAmount = (msg.value * marketplaceFeePercent) / 10000;
         uint256 royaltyAmount = (msg.value * item.royaltyPercent) / 10000;
         uint256 sellerAmount = msg.value - feeAmount - royaltyAmount;
 
-        // Marketplace fee
+        // ===== INTERACTIONS =====
+
+        // 1. Transfer NFT
+        IERC721(item.nftAddress).safeTransferFrom(
+            item.seller,
+            msg.sender,
+            item.tokenId
+        );
+
+        // 2. Pay marketplace
         if (feeAmount > 0) {
-            payable(feeRecipient).transfer(feeAmount);
+            (bool successFee, ) = payable(feeRecipient).call{value: feeAmount}("");
+            require(successFee, "Fee transfer failed");
         }
 
-        // Creator royalty
+        // 3. Pay royalty
         if (royaltyAmount > 0 && item.royaltyReceiver != address(0)) {
-            payable(item.royaltyReceiver).transfer(royaltyAmount);
+            (bool successRoyalty, ) = payable(item.royaltyReceiver).call{value: royaltyAmount}("");
+            require(successRoyalty, "Royalty failed");
         }
 
-        // Seller payout
-        payable(item.seller).transfer(sellerAmount);
-
-        // Transfer NFT to buyer
-        IERC721(item.nftAddress).safeTransferFrom(item.seller, msg.sender, item.tokenId);
-
-        // Remove listing
-        delete listings[nftAddress][tokenId];
+        // 4. Pay seller
+        (bool successSeller, ) = payable(item.seller).call{value: sellerAmount}("");
+        require(successSeller, "Seller payment failed");
 
         emit Purchase(
             msg.sender,
@@ -155,22 +170,28 @@ contract NFTMarketplace is ReentrancyGuard {
 
     function cancelListing(address nftAddress, uint256 tokenId) external {
         Listing memory item = listings[nftAddress][tokenId];
+
         require(item.isListed, "Not listed");
-        require(item.seller == msg.sender, "Not the seller");
+        require(item.seller == msg.sender, "Not seller");
 
         delete listings[nftAddress][tokenId];
+
         emit Unlisted(msg.sender, nftAddress, tokenId);
     }
 
-    function getListing(address nftAddress, uint256 tokenId) external view returns (Listing memory) {
+    function getListing(address nftAddress, uint256 tokenId)
+        external
+        view
+        returns (Listing memory)
+    {
         return listings[nftAddress][tokenId];
     }
 
     receive() external payable {
-        revert("Direct ETH not accepted");
+        revert("Direct ETH not allowed");
     }
 
     fallback() external payable {
-        revert("Unknown function");
+        revert("Invalid call");
     }
 }
